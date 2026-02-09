@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Translated Audio Recorder</title>
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.js"></script>
+    <style>
+        body { background: black; margin: 0; padding: 0; }
+        #audio-container { display: none; }
+    </style>
+</head>
+<body>
+    <div id="audio-container"></div>
+    
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const wsUrl = urlParams.get('url');
+        const token = urlParams.get('token');
+        
+        const room = new LivekitClient.Room({
+            adaptiveStream: false,
+            dynacast: false,
+        });
+        
+        const audioContainer = document.getElementById('audio-container');
+        
+        // Track which participants are the agent
+        function isAgentParticipant(participant) {
+            return participant.identity === 'agent';
+        }
+        
+        room.on('trackSubscribed', (track, publication, participant) => {
+            if (track.kind === 'audio' && isAgentParticipant(participant)) {
+                console.log(`[TRANSLATED] Subscribing to agent audio: ${publication.trackName}`);
+                const audioElement = track.attach();
+                audioElement.id = `audio-${participant.identity}-${track.sid}`;
+                audioContainer.appendChild(audioElement);
+            }
+        });
+        
+        room.on('trackUnsubscribed', (track, publication, participant) => {
+            if (track.kind === 'audio') {
+                const elements = track.detach();
+                elements.forEach(el => el.remove());
+            }
+        });
+        
+        room.on('participantConnected', (participant) => {
+            console.log(`[TRANSLATED] Participant connected: ${participant.identity}`);
+            
+            // Unsubscribe from non-agent tracks
+            if (!isAgentParticipant(participant)) {
+                participant.trackPublications.forEach((publication) => {
+                    if (publication.track && publication.kind === 'audio') {
+                        publication.setSubscribed(false);
+                    }
+                });
+            }
+        });
+        
+        // Connect to room
+        room.connect(wsUrl, token).then(() => {
+            console.log('[TRANSLATED] Connected to room - Recording agent audio only');
+            
+            // Unsubscribe from all human tracks
+            room.remoteParticipants.forEach((participant) => {
+                if (!isAgentParticipant(participant)) {
+                    participant.trackPublications.forEach((publication) => {
+                        publication.setSubscribed(false);
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
