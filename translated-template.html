@@ -6,70 +6,137 @@
     <style>
         body { background: black; margin: 0; padding: 0; }
         #audio-container { display: none; }
+        #status { color: white; font-family: monospace; padding: 10px; }
     </style>
 </head>
 <body>
+    <div id="status">Initializing...</div>
     <div id="audio-container"></div>
     
     <script>
+        const statusEl = document.getElementById('status');
+        const audioContainer = document.getElementById('audio-container');
+        
+        function log(msg) {
+            console.log('[TRANSLATED]', msg);
+            statusEl.textContent = msg;
+        }
+        
+        // Get URL parameters
         const urlParams = new URLSearchParams(window.location.search);
         const wsUrl = urlParams.get('url');
         const token = urlParams.get('token');
         
-        const room = new LivekitClient.Room({
-            adaptiveStream: false,
-            dynacast: false,
-        });
-        
-        const audioContainer = document.getElementById('audio-container');
-        
-        // Track which participants are the agent
-        function isAgentParticipant(participant) {
-            return participant.identity === 'agent';
+        if (!wsUrl || !token) {
+            log('Waiting for LiveKit connection parameters...');
+        } else {
+            startRecording();
         }
         
-        room.on('trackSubscribed', (track, publication, participant) => {
-            if (track.kind === 'audio' && isAgentParticipant(participant)) {
-                console.log(`[TRANSLATED] Subscribing to agent audio: ${publication.trackName}`);
-                const audioElement = track.attach();
-                audioElement.id = `audio-${participant.identity}-${track.sid}`;
-                audioContainer.appendChild(audioElement);
-            }
-        });
-        
-        room.on('trackUnsubscribed', (track, publication, participant) => {
-            if (track.kind === 'audio') {
-                const elements = track.detach();
-                elements.forEach(el => el.remove());
-            }
-        });
-        
-        room.on('participantConnected', (participant) => {
-            console.log(`[TRANSLATED] Participant connected: ${participant.identity}`);
+        async function startRecording() {
+            log('Connecting to LiveKit...');
             
-            // Unsubscribe from non-agent tracks
-            if (!isAgentParticipant(participant)) {
-                participant.trackPublications.forEach((publication) => {
-                    if (publication.track && publication.kind === 'audio') {
-                        publication.setSubscribed(false);
+            const room = new LivekitClient.Room({
+                adaptiveStream: false,
+                dynacast: false,
+            });
+            
+            // Check if participant is the agent
+            function isAgentParticipant(participant) {
+                if (!participant || !participant.identity) return false;
+                return participant.identity === 'agent';
+            }
+            
+            // Handle new tracks
+            room.on('trackSubscribed', (track, publication, participant) => {
+                if (!track || !participant) return;
+                
+                if (track.kind === 'audio' && isAgentParticipant(participant)) {
+                    const trackName = publication && publication.trackName ? publication.trackName : 'unknown';
+                    log(`Recording agent track: ${trackName}`);
+                    try {
+                        const audioElement = track.attach();
+                        audioElement.id = `audio-agent-${track.sid}`;
+                        audioContainer.appendChild(audioElement);
+                    } catch (e) {
+                        console.error('Error attaching track:', e);
                     }
-                });
-            }
-        });
-        
-        // Connect to room
-        room.connect(wsUrl, token).then(() => {
-            console.log('[TRANSLATED] Connected to room - Recording agent audio only');
+                }
+            });
             
-            // Unsubscribe from all human tracks
-            room.remoteParticipants.forEach((participant) => {
+            // Handle track unsubscribed
+            room.on('trackUnsubscribed', (track, publication, participant) => {
+                if (!track) return;
+                if (track.kind === 'audio') {
+                    try {
+                        const elements = track.detach();
+                        elements.forEach(el => el.remove());
+                    } catch (e) {
+                        console.error('Error detaching track:', e);
+                    }
+                }
+            });
+            
+            // Handle new participants
+            room.on('participantConnected', (participant) => {
+                if (!participant) return;
+                log(`Participant joined: ${participant.identity}`);
+                
+                // If not agent, unsubscribe from their tracks
                 if (!isAgentParticipant(participant)) {
                     participant.trackPublications.forEach((publication) => {
-                        publication.setSubscribed(false);
+                        if (publication.kind === 'audio') {
+                            try {
+                                publication.setSubscribed(false);
+                            } catch (e) {
+                                console.error('Error unsubscribing:', e);
+                            }
+                        }
                     });
                 }
             });
-        });
+            
+            // Connect to room
+            try {
+                await room.connect(wsUrl, token);
+                log(`Connected! Recording agent only.`);
+                
+                // Process existing participants
+                room.remoteParticipants.forEach((participant) => {
+                    if (!isAgentParticipant(participant)) {
+                        // Unsubscribe from human tracks
+                        participant.trackPublications.forEach((publication) => {
+                            if (publication.kind === 'audio') {
+                                try {
+                                    publication.setSubscribed(false);
+                                } catch (e) {
+                                    console.error('Error unsubscribing:', e);
+                                }
+                            }
+                        });
+                    } else {
+                        // Subscribe to agent tracks
+                        participant.trackPublications.forEach((publication) => {
+                            if (publication.kind === 'audio' && publication.track) {
+                                const trackName = publication.trackName ? publication.trackName : 'unknown';
+                                log(`Recording agent track: ${trackName}`);
+                                try {
+                                    const audioElement = publication.track.attach();
+                                    audioElement.id = `audio-agent-${publication.track.sid}`;
+                                    audioContainer.appendChild(audioElement);
+                                } catch (e) {
+                                    console.error('Error attaching track:', e);
+                                }
+                            }
+                        });
+                    }
+                });
+                
+            } catch (error) {
+                log(`Connection error: ${error.message}`);
+                console.error('Connection error:', error);
+            }
+        }
     </script>
 </body>
 </html>
